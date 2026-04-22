@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	policiesv1 "github.com/kubewarden/kubewarden-controller/api/policies/v1"
 	"github.com/kubewarden/kubewarden-controller/internal/certs"
@@ -66,8 +68,25 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	var ctx context.Context
 	ctx, cancel := context.WithCancel(context.TODO())
 
+	// Copy Kubewarden CRD files to a temp directory so envtest can load
+	// them. This is necessary to ensure that the latest CRDs version are available
+	// in the tests.
+	crdSourceDir := filepath.Join("..", "..", "charts", "kubewarden-crds", "templates")
+	crdTempDir, err := os.MkdirTemp("", "kubewarden-crds-*")
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { os.RemoveAll(crdTempDir) })
+
+	crdFiles, err := filepath.Glob(filepath.Join(crdSourceDir, "policies.kubewarden.io_*.yaml"))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(crdFiles).NotTo(BeEmpty(), "no Kubewarden CRD files found in %s", crdSourceDir)
+	for _, src := range crdFiles {
+		data, readErr := os.ReadFile(src)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(os.WriteFile(filepath.Join(crdTempDir, filepath.Base(src)), data, 0o600)).To(Succeed())
+	}
+
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{crdTempDir},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -86,6 +105,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	k8sManager, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme: scheme.Scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
+		},
 	})
 	Expect(err).ToNot(HaveOccurred())
 
@@ -122,11 +144,15 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).ToNot(HaveOccurred())
 
 	err = (&PolicyServerReconciler{
-		Client:                k8sManager.GetClient(),
-		Scheme:                k8sManager.GetScheme(),
-		DeploymentsNamespace:  deploymentsNamespace,
-		ClientCAConfigMapName: clientCAConfigMapName,
-		ImagePullSecrets:      []corev1.LocalObjectReference{{Name: reconcilerImagePullSecret}},
+		Client:                  k8sManager.GetClient(),
+		Scheme:                  k8sManager.GetScheme(),
+		DeploymentsNamespace:    deploymentsNamespace,
+		ClientCAConfigMapName:   clientCAConfigMapName,
+		ImagePullSecrets:        []corev1.LocalObjectReference{{Name: reconcilerImagePullSecret}},
+		PolicyServerMetricsPort: constants.PolicyServerMetricsPort,
+		TelemetryConfiguration: TelemetryConfiguration{
+			MetricsEnabled: true,
+		},
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
