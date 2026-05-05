@@ -133,10 +133,11 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - name: Generate and sign attestations
-        uses: kubewarden/github-actions/attestation@7bee120924c03de60befb15d9932b960aca2f4d6 # v5.2.0
+        uses: jvanz/github-actions/attestation@0cd68869b3cf3b6117cdd1c870d7a9d2e9fd8710
         with:
           component: ${{ matrix.component }}
           arch: ${{ matrix.arch }}
+          namespace: adm-controller
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release:
